@@ -126,6 +126,10 @@ void setupFixtures();
 void sortTeams(struct Team *teams);
 void endScreen();
 void swapLeagueTeams(struct Team *teams, int i, int j);
+void refreshAllPlayerStats();
+int getMatchPairIndex(int homeIdx, int awayIdx);
+int findTeamIndexInLeague(char *teamName);
+int isTransferWindowOpen();
 
 int main() {
     printf(CLEAR);
@@ -542,51 +546,20 @@ void chooseTeamsForLeague() {
 }
 
 void setupFixtures() {
-    struct Team dummy;
-    dummy.teamId = -1;
+    // Round-robin fixture pattern for 4 teams (home-away format)
+    int fixturePattern[LEAGUE_TEAMS][LEAGUE_WEEKS] = {
+        {1, 2, 3, 1, 2, 3},  // Team 0 opponents
+        {0, 2, 3, 0, 2, 3},  // Team 1 opponents
+        {3, 0, 1, 3, 0, 1},  // Team 2 opponents
+        {2, 1, 0, 2, 1, 0}   // Team 3 opponents
+    };
     
-    // Team 0 fixtures
-    league.teamsOpponents[0][0] = league.teams[1];
-    league.teamsOpponents[0][1] = league.teams[2];
-    league.teamsOpponents[0][2] = league.teams[3];
-    league.teamsOpponents[0][3] = league.teams[1];
-    league.teamsOpponents[0][4] = league.teams[2];
-    league.teamsOpponents[0][5] = league.teams[3];
-    
-    // Team 1 fixtures
-    strcpy(dummy.name, league.teams[0].name);
-    league.teamsOpponents[1][0] = dummy;
-    league.teamsOpponents[1][1] = league.teams[2];
-    league.teamsOpponents[1][2] = league.teams[3];
-    league.teamsOpponents[1][3] = dummy;
-    league.teamsOpponents[1][4] = league.teams[2];
-    league.teamsOpponents[1][5] = league.teams[3];
-    
-    // Team 2 fixtures
-    league.teamsOpponents[2][0] = league.teams[3];
-    strcpy(dummy.name, league.teams[0].name);
-    league.teamsOpponents[2][1] = dummy;
-    strcpy(dummy.name, league.teams[1].name);
-    league.teamsOpponents[2][2] = dummy;
-    league.teamsOpponents[2][3] = league.teams[3];
-    strcpy(dummy.name, league.teams[0].name);
-    league.teamsOpponents[2][4] = dummy;
-    strcpy(dummy.name, league.teams[1].name);
-    league.teamsOpponents[2][5] = dummy;
-    
-    // Team 3 fixtures
-    strcpy(dummy.name, league.teams[2].name);
-    league.teamsOpponents[3][0] = dummy;
-    strcpy(dummy.name, league.teams[1].name);
-    league.teamsOpponents[3][1] = dummy;
-    strcpy(dummy.name, league.teams[0].name);
-    league.teamsOpponents[3][2] = dummy;
-    strcpy(dummy.name, league.teams[2].name);
-    league.teamsOpponents[3][3] = dummy;
-    strcpy(dummy.name, league.teams[1].name);
-    league.teamsOpponents[3][4] = dummy;
-    strcpy(dummy.name, league.teams[0].name);
-    league.teamsOpponents[3][5] = dummy;
+    for (int team = 0; team < LEAGUE_TEAMS; team++) {
+        for (int week = 0; week < LEAGUE_WEEKS; week++) {
+            int opponentIndex = fixturePattern[team][week];
+            league.teamsOpponents[team][week] = league.teams[opponentIndex];
+        }
+    }
 }
 
 void createFixtures() {
@@ -633,40 +606,79 @@ void playWeekGames() {
     writeToFiles();
 }
 
-void updatePlayerStats(int teamIndex, int startPlayer, int endPlayer) {
-    for (int i = startPlayer; i < endPlayer; i++) {
-        int actualIndex = i % SQUAD_SIZE;
+void refreshAllPlayerStats() {
+    int teamStartIndices[LEAGUE_TEAMS][2] = {
+        {0, 8},   // Team 0: players 0-7
+        {8, 16},  // Team 1: players 8-15
+        {16, 24}, // Team 2: players 16-23
+        {24, 32}  // Team 3: players 24-31
+    };
+    
+    for (int teamIdx = 0; teamIdx < LEAGUE_TEAMS; teamIdx++) {
+        int startIdx = teamStartIndices[teamIdx][0];
+        int endIdx = teamStartIndices[teamIdx][1];
         
-        for (int j = 0; j < playersCounter; j++) {
-            if (strcmp(league.teams[teamIndex].teamPlayers[actualIndex].name, 
-                      players[j].name) == 0) {
-                league.teams[teamIndex].teamPlayers[actualIndex].attackPower = 
-                    getPlayerAttack(players[j]);
-                league.teams[teamIndex].teamPlayers[actualIndex].defensePower = 
-                    getPlayerDefense(players[j]);
-                teams[teamIndex].teamPlayers[actualIndex].attackPower = 
-                    getPlayerAttack(players[j]);
-                teams[teamIndex].teamPlayers[actualIndex].defensePower = 
-                    getPlayerDefense(players[j]);
-                break;
+        for (int i = startIdx; i < endIdx; i++) {
+            int playerIdx = i % SQUAD_SIZE;
+            
+            // Find player in global array
+            for (int j = 0; j < playersCounter; j++) {
+                if (strcmp(league.teams[teamIdx].teamPlayers[playerIdx].name, 
+                          players[j].name) == 0) {
+                    league.teams[teamIdx].teamPlayers[playerIdx].attackPower = 
+                        getPlayerAttack(players[j]);
+                    league.teams[teamIdx].teamPlayers[playerIdx].defensePower = 
+                        getPlayerDefense(players[j]);
+                    teams[teamIdx].teamPlayers[playerIdx].attackPower = 
+                        getPlayerAttack(players[j]);
+                    teams[teamIdx].teamPlayers[playerIdx].defensePower = 
+                        getPlayerDefense(players[j]);
+                    break;
+                }
             }
         }
     }
 }
 
-int shouldSkipMatch(int homeIdx, int awayIdx, int week) {
-    int pairIndex = -1;
+int getMatchPairIndex(int homeIdx, int awayIdx) {
+    // Match pair lookup table: [team1][team2] = pairIndex
+    static int pairMap[LEAGUE_TEAMS][LEAGUE_TEAMS] = {
+        {-1,  2,  1,  0},  // Team 0 vs others
+        { 2, -1,  4,  3},  // Team 1 vs others
+        { 1,  4, -1,  5},  // Team 2 vs others
+        { 0,  3,  5, -1}   // Team 3 vs others
+    };
     
-    if ((homeIdx == 0 && awayIdx == 3) || (homeIdx == 3 && awayIdx == 0)) pairIndex = 0;
-    else if ((homeIdx == 0 && awayIdx == 2) || (homeIdx == 2 && awayIdx == 0)) pairIndex = 1;
-    else if ((homeIdx == 0 && awayIdx == 1) || (homeIdx == 1 && awayIdx == 0)) pairIndex = 2;
-    else if ((homeIdx == 1 && awayIdx == 3) || (homeIdx == 3 && awayIdx == 1)) pairIndex = 3;
-    else if ((homeIdx == 1 && awayIdx == 2) || (homeIdx == 2 && awayIdx == 1)) pairIndex = 4;
-    else if ((homeIdx == 2 && awayIdx == 3) || (homeIdx == 3 && awayIdx == 2)) pairIndex = 5;
+    if (homeIdx < 0 || homeIdx >= LEAGUE_TEAMS || 
+        awayIdx < 0 || awayIdx >= LEAGUE_TEAMS) {
+        return -1;
+    }
+    
+    return pairMap[homeIdx][awayIdx];
+}
+
+int findTeamIndexInLeague(char *teamName) {
+    for (int i = 0; i < LEAGUE_TEAMS; i++) {
+        if (strcmp(league.teams[i].name, teamName) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int isTransferWindowOpen() {
+    return (currentWeek != 1 && currentWeek != 2 && 
+            currentWeek != 4 && currentWeek != 5);
+}
+
+int shouldSkipMatch(int homeIdx, int awayIdx, int week) {
+    if (homeIdx == awayIdx) return 1;
+    
+    int pairIndex = getMatchPairIndex(homeIdx, awayIdx);
     
     if (pairIndex != -1) {
-        league.matchCounter[week] += 1;
-        if (league.matchCounter[week] >= 3) {
+        league.matchCounter[pairIndex]++;
+        if (league.matchCounter[pairIndex] >= 3) {
             return 1;
         }
     }
@@ -679,12 +691,9 @@ void showFutureGames(int week) {
         struct Team homeTeam = league.teams[i];
         struct Team awayTeam = league.teamsOpponents[i][week];
         
-        int j;
-        for (j = 0; j < LEAGUE_TEAMS; j++) {
-            if (strcmp(league.teams[j].name, awayTeam.name) == 0) break;
-        }
+        int j = findTeamIndexInLeague(awayTeam.name);
         
-        if (awayTeam.teamId == -1 || i == j) continue;
+        if (awayTeam.teamId == -1 || i == j || j == -1) continue;
         
         if (shouldSkipMatch(i, j, week)) continue;
         
@@ -697,59 +706,43 @@ void applyFatigue(int homeIdx, int awayIdx) {
     int awayGlobalIdx = doesTeamExist(league.teams[awayIdx].name);
     
     for (int k = 0; k < PLAYING_SQUAD; k++) {
-        // Reduce stats for league teams
-        league.teams[homeIdx].teamPlayers[k].attackPower -= FATIGUE_REDUCTION;
-        if (league.teams[homeIdx].teamPlayers[k].attackPower < 0)
-            league.teams[homeIdx].teamPlayers[k].attackPower = 0;
-            
-        league.teams[homeIdx].teamPlayers[k].defensePower -= FATIGUE_REDUCTION;
-        if (league.teams[homeIdx].teamPlayers[k].defensePower < 0)
-            league.teams[homeIdx].teamPlayers[k].defensePower = 0;
-            
-        league.teams[awayIdx].teamPlayers[k].attackPower -= FATIGUE_REDUCTION;
-        if (league.teams[awayIdx].teamPlayers[k].attackPower < 0)
-            league.teams[awayIdx].teamPlayers[k].attackPower = 0;
-            
-        league.teams[awayIdx].teamPlayers[k].defensePower -= FATIGUE_REDUCTION;
-        if (league.teams[awayIdx].teamPlayers[k].defensePower < 0)
-            league.teams[awayIdx].teamPlayers[k].defensePower = 0;
+        // Define which players/teams to update
+        struct {
+            struct Player *player;
+            int isAttack;
+        } updates[] = {
+            {&league.teams[homeIdx].teamPlayers[k], 1},
+            {&league.teams[homeIdx].teamPlayers[k], 0},
+            {&league.teams[awayIdx].teamPlayers[k], 1},
+            {&league.teams[awayIdx].teamPlayers[k], 0},
+            {&teams[homeGlobalIdx].teamPlayers[k], 1},
+            {&teams[homeGlobalIdx].teamPlayers[k], 0},
+            {&teams[awayGlobalIdx].teamPlayers[k], 1},
+            {&teams[awayGlobalIdx].teamPlayers[k], 0}
+        };
         
-        // Reduce stats for global teams
-        teams[awayGlobalIdx].teamPlayers[k].attackPower -= FATIGUE_REDUCTION;
-        if (teams[awayGlobalIdx].teamPlayers[k].attackPower < 0)
-            teams[awayGlobalIdx].teamPlayers[k].attackPower = 0;
+        for (int u = 0; u < 8; u++) {
+            int *stat = updates[u].isAttack ? 
+                       &updates[u].player->attackPower : 
+                       &updates[u].player->defensePower;
             
-        teams[homeGlobalIdx].teamPlayers[k].defensePower -= FATIGUE_REDUCTION;
-        if (teams[homeGlobalIdx].teamPlayers[k].defensePower < 0)
-            teams[homeGlobalIdx].teamPlayers[k].defensePower = 0;
-            
-        teams[homeGlobalIdx].teamPlayers[k].attackPower -= FATIGUE_REDUCTION;
-        if (teams[homeGlobalIdx].teamPlayers[k].attackPower < 0)
-            teams[homeGlobalIdx].teamPlayers[k].attackPower = 0;
-            
-        teams[awayGlobalIdx].teamPlayers[k].defensePower -= FATIGUE_REDUCTION;
-        if (teams[awayGlobalIdx].teamPlayers[k].defensePower < 0)
-            teams[awayGlobalIdx].teamPlayers[k].defensePower = 0;
+            *stat -= FATIGUE_REDUCTION;
+            if (*stat < 0) *stat = 0;
+        }
     }
 }
 
 void startWeekGames() {
-    // Update player stats before games
-    updatePlayerStats(0, 5, 8);
-    updatePlayerStats(1, 13, 16);
-    updatePlayerStats(2, 21, 24);
-    updatePlayerStats(3, 29, 32);
+    // Update player stats before games (reserve players)
+    refreshAllPlayerStats();
     
     for (int i = 0; i < LEAGUE_TEAMS; i++) {
         struct Team homeTeam = league.teams[i];
         struct Team awayTeam = league.teamsOpponents[i][currentWeek];
         
-        int j;
-        for (j = 0; j < LEAGUE_TEAMS; j++) {
-            if (strcmp(league.teams[j].name, awayTeam.name) == 0) break;
-        }
+        int j = findTeamIndexInLeague(awayTeam.name);
         
-        if (awayTeam.teamId == -1 || i == j) continue;
+        if (awayTeam.teamId == -1 || i == j || j == -1) continue;
         if (shouldSkipMatch(i, j, currentWeek)) continue;
         
         // Calculate goals
@@ -801,10 +794,7 @@ void startWeekGames() {
     
     // Reset player stats at specific weeks
     if (currentWeek == 3 || currentWeek == 6) {
-        updatePlayerStats(0, 0, 8);
-        updatePlayerStats(1, 8, 16);
-        updatePlayerStats(2, 16, 24);
-        updatePlayerStats(3, 24, 32);
+        refreshAllPlayerStats();
         doesTransferWindowOpened = 0;
     }
     
@@ -928,12 +918,12 @@ void sortPlayers() {
 }
 
 void buyPlayer(int index) {
-    sortPlayers();
-    
-    if (currentWeek == 1 || currentWeek == 2 || currentWeek == 4 || currentWeek == 5) {
+    if (!isTransferWindowOpen()) {
         printf(FRED "Transfer window is closed!\n");
         return;
     }
+    
+    sortPlayers();
     
     for (int i = 0; i < playersCounter; i++) {
         if (strcmp(players[i].teamName, "free agent") == 0) {
@@ -957,12 +947,12 @@ void buyPlayer(int index) {
 }
 
 void sellPlayer(int index) {
-    sortPlayers();
-    
-    if (currentWeek == 1 || currentWeek == 2 || currentWeek == 4 || currentWeek == 5) {
+    if (!isTransferWindowOpen()) {
         printf(FRED "Transfer window is closed!\n");
         return;
     }
+    
+    sortPlayers();
     
     for (int i = 0; i < playersCounter; i++) {
         if (strcmp(players[i].teamName, teams[index].name) == 0) {
@@ -1047,11 +1037,11 @@ void showFixtures(int index) {
 }
 
 void showNextOpponent(int index) {
-    int leagueIndex;
-    for (leagueIndex = 0; leagueIndex < LEAGUE_TEAMS; leagueIndex++) {
-        if (strcmp(league.teams[leagueIndex].name, teams[index].name) == 0) {
-            break;
-        }
+    int leagueIndex = findTeamIndexInLeague(teams[index].name);
+    
+    if (leagueIndex == -1) {
+        printf(FRED "Team not found in league!\n");
+        return;
     }
     
     showTeam(league.teamsOpponents[leagueIndex][currentWeek]);
@@ -1106,39 +1096,45 @@ void readFromFiles() {
     if ((file = fopen("leagueOtherInfo.dat", "rb"))) {
         fread(&leagueOtherInfo, sizeof(struct LeagueOtherInfo), 1, file);
         fclose(file);
+        
+        currentWeek = leagueOtherInfo.currentWeek;
+        doesLeagueStarted = leagueOtherInfo.doesLeagueStarted;
+        doesTransferWindowOpened = leagueOtherInfo.doesTransferWindowOpened;
     }
-    
-    currentWeek = leagueOtherInfo.currentWeek;
-    doesLeagueStarted = leagueOtherInfo.doesLeagueStarted;
-    doesTransferWindowOpened = leagueOtherInfo.doesTransferWindowOpened;
 }
 
 void writeToFiles() {
-    FILE *file;
+    // Update leagueOtherInfo before writing
+    leagueOtherInfo.currentWeek = currentWeek;
+    leagueOtherInfo.doesLeagueStarted = doesLeagueStarted;
+    leagueOtherInfo.doesTransferWindowOpened = doesTransferWindowOpened;
     
-    file = fopen("league.dat", "wb");
-    fwrite(&league, sizeof(struct League), 1, file);
-    fclose(file);
+    struct {
+        const char *filename;
+        void *data;
+        size_t size;
+        int count;
+        int isArray;
+    } files[] = {
+        {"league.dat", &league, sizeof(struct League), 1, 0},
+        {"teams.dat", teams, sizeof(struct Team), teamsCounter, 1},
+        {"teamManagers.dat", teamManagers, sizeof(struct TeamManager), teamsCounter, 1},
+        {"players.dat", players, sizeof(struct Player), playersCounter, 1},
+        {"leagueOtherInfo.dat", &leagueOtherInfo, sizeof(struct LeagueOtherInfo), 1, 0}
+    };
     
-    file = fopen("teams.dat", "wb");
-    for (int i = 0; i < teamsCounter; i++) {
-        fwrite(&teams[i], sizeof(struct Team), 1, file);
+    for (int i = 0; i < 5; i++) {
+        FILE *file = fopen(files[i].filename, "wb");
+        if (file) {
+            if (files[i].isArray) {
+                for (int j = 0; j < files[i].count; j++) {
+                    fwrite((char*)files[i].data + (j * files[i].size), 
+                           files[i].size, 1, file);
+                }
+            } else {
+                fwrite(files[i].data, files[i].size, files[i].count, file);
+            }
+            fclose(file);
+        }
     }
-    fclose(file);
-    
-    file = fopen("teamManagers.dat", "wb");
-    for (int i = 0; i < teamsCounter; i++) {
-        fwrite(&teamManagers[i], sizeof(struct TeamManager), 1, file);
-    }
-    fclose(file);
-    
-    file = fopen("players.dat", "wb");
-    for (int i = 0; i < playersCounter; i++) {
-        fwrite(&players[i], sizeof(struct Player), 1, file);
-    }
-    fclose(file);
-    
-    file = fopen("leagueOtherInfo.dat", "wb");
-    fwrite(&leagueOtherInfo, sizeof(struct LeagueOtherInfo), 1, file);
-    fclose(file);
 }
